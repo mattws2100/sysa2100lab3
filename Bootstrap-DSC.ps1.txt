@@ -1,0 +1,21 @@
+$staging = "C:\DSC"
+$dn = "sysa2100.ca"
+$hn = hostname
+$fqdn = "$hn.$dn"
+
+if(!(Test-Path "$staging")) { New-Item -Path "$staging" -ItemType Directory }
+cd "$staging"
+curl.exe -L "https://raw.githubusercontent.com/mattws2100/sysa2100lab3/refs/heads/main/Install-IIS.ps1.txt" -o "$staging\Install-IIS.ps1"
+curl.exe 'https://download.microsoft.com/download/7/c/1/7c14e92e-bdcb-4f89-b7cf-93543e7112d1/SQLEXPRADV_x64_ENU.exe' -L -o "$staging\SQLEXPRADV_x64_ENU.exe"
+.\SQLEXPRADV_x64_ENU.exe /q /x:"$staging\SQLEXPR_2019"
+
+
+if(Test-Path "$staging\Install-IIS.ps1") {
+	. .\Install-IIS.ps1
+	# Compile the DSC configuration.
+	InstallIIS -CertificateDnsName "$fqdn" -OutputPath 'C:\DSC\InstallIIS'
+
+	# Apply the configuration locally.
+	Start-DscConfiguration -Path 'C:\DSC\InstallIIS' -Wait -Verbose -Force
+}
+
