@@ -1,0 +1,224 @@
+Configuration InstallIIS
+{
+    param
+    (
+        [string]$SiteName = 'Default Web Site',
+
+        # Use the DNS name clients will use to access IIS.
+        [string]$CertificateDnsName = 'localhost'
+    )
+
+    Import-DscResource -ModuleName PSDesiredStateConfiguration
+
+    Node 'localhost'
+    {
+        # 1. Install IIS and IIS management tools
+        WindowsFeature IIS
+        {
+            Ensure = 'Present'
+            Name   = 'Web-Server'
+        }
+
+        WindowsFeature IISManagementTools
+        {
+            Ensure    = 'Present'
+            Name      = 'Web-Mgmt-Tools'
+            DependsOn = '[WindowsFeature]IIS'
+        }
+
+        # 2. Create the self-signed certificate and configure HTTPS.
+        Script IISCertificateAndBindings
+        {
+            DependsOn = '[WindowsFeature]IIS'
+
+            GetScript = {
+                $binding = Get-WebBinding `
+                    -Name $using:SiteName `
+                    -Protocol 'https' `
+                    -Port 443 `
+                    -ErrorAction SilentlyContinue
+
+                $cert = Get-ChildItem Cert:\LocalMachine\My |
+                    Where-Object {
+                        $_.DnsNameList.Unicode -contains $using:CertificateDnsName `
+                        -and $_.HasPrivateKey `
+                        -and $_.NotAfter -gt (Get-Date)
+                    } |
+                    Sort-Object NotAfter -Descending |
+                    Select-Object -First 1
+
+                return @{
+                    Result = "HTTPS binding exists: $([bool]$binding); Certificate exists: $([bool]$cert)"
+                }
+            }
+
+            TestScript = {
+                Import-Module WebAdministration
+
+                $cert = Get-ChildItem Cert:\LocalMachine\My |
+                    Where-Object {
+                        $_.DnsNameList.Unicode -contains $using:CertificateDnsName `
+                        -and $_.HasPrivateKey `
+                        -and $_.NotAfter -gt (Get-Date)
+                    } |
+                    Sort-Object NotAfter -Descending |
+                    Select-Object -First 1
+
+                $binding = Get-WebBinding `
+                    -Name $using:SiteName `
+                    -Protocol 'https' `
+                    -Port 443 `
+                    -ErrorAction SilentlyContinue
+
+                if (-not $cert -or -not $binding) {
+                    return $false
+                }
+
+                $ssl = Get-Item "IIS:\SslBindings\0.0.0.0!443" `
+                    -ErrorAction SilentlyContinue
+
+                return (
+                    $null -ne $ssl -and
+                    $ssl.Thumbprint -eq $cert.Thumbprint
+                )
+            }
+
+            SetScript = {
+                Import-Module WebAdministration
+
+                # Find an existing valid certificate or create one.
+                $cert = Get-ChildItem Cert:\LocalMachine\My |
+                    Where-Object {
+                        $_.DnsNameList.Unicode -contains $using:CertificateDnsName `
+                        -and $_.HasPrivateKey `
+                        -and $_.NotAfter -gt (Get-Date)
+                    } |
+                    Sort-Object NotAfter -Descending |
+                    Select-Object -First 1
+
+                if (-not $cert) {
+                    $cert = New-SelfSignedCertificate `
+                        -DnsName $using:CertificateDnsName `
+                        -CertStoreLocation 'Cert:\LocalMachine\My' `
+                        -FriendlyName 'IIS DSC HTTPS' `
+                        -Type SSLServerAuthentication `
+                        -NotAfter (Get-Date).AddYears(2)
+                }
+
+                # Ensure the website has an HTTP binding.
+                $http = Get-WebBinding `
+                    -Name $using:SiteName `
+                    -Protocol 'http' `
+                    -Port 80 `
+                    -ErrorAction SilentlyContinue
+
+                if (-not $http) {
+                    New-WebBinding `
+                        -Name $using:SiteName `
+                        -Protocol 'http' `
+                        -Port 80 `
+                        -IPAddress '*'
+                }
+
+                # Ensure the website has an HTTPS binding.
+                $https = Get-WebBinding `
+                    -Name $using:SiteName `
+                    -Protocol 'https' `
+                    -Port 443 `
+                    -ErrorAction SilentlyContinue
+
+                if (-not $https) {
+                    New-WebBinding `
+                        -Name $using:SiteName `
+                        -Protocol 'https' `
+                        -Port 443 `
+                        -IPAddress '*'
+                }
+
+                # Associate the certificate with the HTTPS binding.
+                $sslPath = 'IIS:\SslBindings\0.0.0.0!443'
+                $ssl = Get-Item $sslPath -ErrorAction SilentlyContinue
+
+                if (-not $ssl) {
+                    New-Item $sslPath `
+                        -Thumbprint $cert.Thumbprint `
+                        -SSLFlags 0 | Out-Null
+                }
+                elseif ($ssl.Thumbprint -ne $cert.Thumbprint) {
+                    Remove-Item $sslPath -Force
+
+                    New-Item $sslPath `
+                        -Thumbprint $cert.Thumbprint `
+                        -SSLFlags 0 | Out-Null
+                }
+
+                # Start IIS.
+                Start-Service W3SVC
+            }
+        }
+
+        # 3. Enable inbound HTTP and HTTPS in Windows Firewall.
+        Script IISFirewallRules
+        {
+            DependsOn = '[Script]IISCertificateAndBindings'
+
+            GetScript = {
+                return @{
+                    Result = 'HTTP and HTTPS firewall rules checked'
+                }
+            }
+
+            TestScript = {
+                $http = Get-NetFirewallRule `
+                    -Name 'DSC-IIS-HTTP' `
+                    -ErrorAction SilentlyContinue
+
+                $https = Get-NetFirewallRule `
+                    -Name 'DSC-IIS-HTTPS' `
+                    -ErrorAction SilentlyContinue
+
+                return (
+                    $http -and $http.Enabled -eq 'True' -and
+                    $https -and $https.Enabled -eq 'True'
+                )
+            }
+
+            SetScript = {
+                foreach ($rule in @(
+                    @{
+                        Name = 'DSC-IIS-HTTP'
+                        Port = 80
+                        DisplayName = 'DSC IIS HTTP'
+                    },
+                    @{
+                        Name = 'DSC-IIS-HTTPS'
+                        Port = 443
+                        DisplayName = 'DSC IIS HTTPS'
+                    }
+                )) {
+                    $existing = Get-NetFirewallRule `
+                        -Name $rule.Name `
+                        -ErrorAction SilentlyContinue
+
+                    if (-not $existing) {
+                        New-NetFirewallRule `
+                            -Name $rule.Name `
+                            -DisplayName $rule.DisplayName `
+                            -Direction Inbound `
+                            -Action Allow `
+                            -Protocol TCP `
+                            -LocalPort $rule.Port `
+                            -Profile Domain,Private,Public | Out-Null
+                    }
+                    else {
+                        Set-NetFirewallRule `
+                            -Name $rule.Name `
+                            -Enabled True `
+                            -Action Allow `
+                            -Direction Inbound
+                    }
+                }
+            }
+        }
+    }
+}
