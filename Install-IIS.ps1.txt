@@ -5,7 +5,10 @@ Configuration InstallIIS
         [string]$SiteName = 'Default Web Site',
 
         # Use the DNS name clients will use to access IIS.
-        [string]$CertificateDnsName = 'localhost'
+        [string]$CertificateDnsName = 'localhost',
+
+        [Parameter(Mandatory = $false)]
+        [string] $SQLInstanceName = "SQLEXPRESS"
     )
 
     Import-DscResource -ModuleName PSDesiredStateConfiguration
@@ -218,6 +221,75 @@ Configuration InstallIIS
                             -Direction Inbound
                     }
                 }
+            }
+        }
+
+        Script SQLExpress
+        {
+            GetScript = {
+                $serviceName = "MSSQL`$$($using:SQLInstanceName)"
+
+                $service = Get-Service `
+                    -Name $serviceName `
+                    -ErrorAction SilentlyContinue
+
+                @{
+                    Result = if ($service) {
+                        "SQL Server instance is installed"
+                    }
+                    else {
+                        "SQL Server instance is not installed"
+                    }
+                }
+            }
+
+            TestScript = {
+                $serviceName = "MSSQL`$$($using:SQLInstanceName)"
+
+                return $null -ne (
+                    Get-Service `
+                        -Name $serviceName `
+                        -ErrorAction SilentlyContinue
+                )
+            }
+
+            SetScript = {
+
+                $installDirectory = "C:\DSC\SQLEXPR_2019"
+                $setup = "$installDirectory\setup.exe"
+
+
+                if (!(Test-Path $setup)) {
+                    throw "SQL Server setup.exe was not found at $setup"
+                }
+
+                Write-Verbose "Installing SQL Server 2019 Express."
+
+                $arguments = @(
+                    "/Q"
+                    "/ACTION=Install"
+                    "/FEATURES=SQLENGINE"
+                    "/INSTANCENAME=$($using:SQLInstanceName)"
+                    "/SQLSVCSTARTUPTYPE=Automatic"
+                    "/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`""
+                    "/TCPENABLED=1"
+                    "/NPENABLED=0"
+                    "/IACCEPTSQLSERVERLICENSETERMS"
+                    "/SUPPRESSPRIVACYSTATEMENTNOTICE"
+                )
+
+                $process = Start-Process `
+                    -FilePath $setup `
+                    -ArgumentList $arguments `
+                    -Wait `
+                    -PassThru `
+                    -NoNewWindow
+
+                if ($process.ExitCode -ne 0) {
+                    throw "SQL Server installation failed. Exit code: $($process.ExitCode)"
+                }
+
+                Write-Verbose "SQL Server 2019 Express installed successfully."
             }
         }
     }
