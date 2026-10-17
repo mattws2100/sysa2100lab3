@@ -2,10 +2,11 @@ $staging = "C:\DSC"
 $dn = "sysa2100.ca"
 $hn = hostname
 $fqdn = "$hn.$dn"
+$baseurl = "https://raw.githubusercontent.com/mattws2100/sysa2100lab3/refs/heads/main"
 
 if(!(Test-Path "$staging")) { New-Item -Path "$staging" -ItemType Directory }
 cd "$staging"
-curl.exe -L "https://raw.githubusercontent.com/mattws2100/sysa2100lab3/refs/heads/main/Install-IIS.ps1.txt" -o "$staging\Install-IIS.ps1"
+curl.exe -L "$baseurl/Install-IIS.ps1.txt" -o "$staging\Install-IIS.ps1"
 curl.exe 'https://download.microsoft.com/download/7/c/1/7c14e92e-bdcb-4f89-b7cf-93543e7112d1/SQLEXPRADV_x64_ENU.exe' -L -o "$staging\SQLEXPRADV_x64_ENU.exe"
 .\SQLEXPRADV_x64_ENU.exe /q /x:"$staging\SQLEXPR_2019"
 curl.exe -L https://aka.ms/ssms/22/release/vs_SSMS.exe -o "$staging\vs_SSMS.exe"
@@ -18,6 +19,12 @@ if(Test-Path "$staging\Install-IIS.ps1") {
 	# Apply the configuration locally.
 	Start-DscConfiguration -Path 'C:\DSC\InstallIIS' -Wait -Verbose -Force
 }
-
+if(Test-Path "C:\inetpub\wwwroot") {
+	if(Test-Path "C:\inetpub\wwwroot\iisstart.htm") { del "C:\inetpub\wwwroot\iisstart.htm" }
+	if(Test-Path "C:\inetpub\wwwroot\iisstart.png") { del "C:\inetpub\wwwroot\iisstart.png" }
+	curl.exe -L "$baseurl/index.html.txt" -o "C:\inetpub\wwwroot\index.html"
+	curl.exe -L "$baseurl/package.json.txt" -o "C:\inetpub\wwwroot\package.json"
+	curl.exe -L "$baseurl/server.js.txt" -o "C:\inetpub\wwwroot\server.js"
+}
 if(Test-Path ".\vs_SSMS.exe") { Start-Process -FilePath ".\vs_SSMS.exe" -ArgumentList "--quiet", "--norestart", "--wait" -Wait }
 shutdown /r /t 60 /c "Finished Bootstrap Installs." /f /d p:4:2
