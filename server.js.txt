@@ -1,0 +1,64 @@
+const express = require("express");
+const Database = require("better-sqlite3");
+const bcrypt = require("bcryptjs");
+const path = require("path");
+
+const app = express();
+const db = new Database("login-demo.db");
+const PORT = 3000;
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
+
+// Create the users table.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL
+  )
+`);
+
+// Seed a fictional account for testing.
+const demoHash = bcrypt.hashSync("DemoPassword123!", 10);
+
+db.prepare(`
+  INSERT OR IGNORE INTO users (username, password_hash)
+  VALUES (?, ?)
+`).run("demo", demoHash);
+
+// Login endpoint.
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body || {};
+
+  if (
+    typeof username !== "string" ||
+    typeof password !== "string" ||
+    username.length > 100 ||
+    password.length > 200
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "Please enter a valid username and password."
+    });
+  }
+
+  // Check the submitted credentials against SQLite.
+  const user = db.prepare(
+    "SELECT id, password_hash FROM users WHERE username = ?"
+  ).get(username);
+
+  if (user) {
+    await bcrypt.compare(password, user.password_hash);
+  }
+
+  // Intentionally reject every combination.
+  return res.status(401).json({
+    success: false,
+    message: "Invalid username or password. Please try again."
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Login demo running at http://localhost:${PORT}`);
+});
